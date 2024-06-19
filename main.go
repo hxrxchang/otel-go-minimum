@@ -3,20 +3,42 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
-type Message struct {
-	Text string `json:"text"`
+type CatApiResponse []struct {
+	URL string `json:"url"`
+}
+
+type Response struct {
+	URL string `json:"url"`
 }
 
 func main() {
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		resp, err := http.Get("https://api.thecatapi.com/v1/images/search")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+
+		var data CatApiResponse
+		err = json.Unmarshal(body, &data)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(Message{Text: "Hello, World!"})
+        json.NewEncoder(w).Encode(Response{URL: data[0].URL})
     })
 
 	fmt.Println("Server is starting ...")
