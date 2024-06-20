@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,7 +9,32 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	"go.opentelemetry.io/otel/trace"
 )
+
+func initTracer() (*sdktrace.TracerProvider, error) {
+	exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	if err != nil {
+		return nil, err
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String("cat-api-server"),
+		)),
+	)
+	otel.SetTracerProvider(tp)
+	return tp, nil
+}
 
 type CatApiResponse []struct {
 	URL string `json:"url"`
@@ -19,8 +45,34 @@ type Response struct {
 }
 
 func main() {
+	tp, err := initTracer()
+	if err != nil {
+		fmt.Println("Error initializing tracer: ", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			fmt.Println("Error shutting down tracer: ", err)
+		}
+	}()
+
+	tracer := otel.Tracer("cat-api-server")
+
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		resp, err := http.Get("https://api.thecatapi.com/v1/images/search")
+		ctx, span := tracer.Start(r.Context(), "GET /")
+		defer span.End()
+
+		client := &http.Client{}
+		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.thecatapi.com/v1/images/search", nil)
+		if err != nil {
+			span.RecordError(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		startTime := time.Now()
+		resp, err := client.Do(req)
+		span.AddEvent("HTTP request made", trace.WithTimestamp(startTime))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
