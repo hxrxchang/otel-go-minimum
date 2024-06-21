@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -66,8 +65,7 @@ func main() {
 	tracer := otel.Tracer("cat-api-server")
 
 	http.HandleFunc("/cat", func(w http.ResponseWriter, r *http.Request) {
-		requestID := uuid.New().String()
-		log.Printf("Handling request ID: %s", requestID)
+		log.Printf("Handling /cat")
 
 		ctx, span := tracer.Start(r.Context(), "GET /cat")
 		defer span.End()
@@ -75,7 +73,7 @@ func main() {
 		client := &http.Client{}
 		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.thecatapi.com/v1/images/search", nil)
 		if err != nil {
-			log.Printf("Request ID: %s, Error creating request: %v", requestID, err)
+			log.Printf("Error creating request: %v", err)
 			span.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -85,7 +83,7 @@ func main() {
 
 		resp, err := client.Do(req.WithContext(childCtx))
 		if err != nil {
-			log.Printf("Request ID: %s, Error making request: %v", requestID, err)
+			log.Printf("Error making request: %v", err)
 			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -96,7 +94,7 @@ func main() {
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Printf("Request ID: %s, Error reading response body: %v", requestID, err)
+			log.Printf("Error reading response body: %v", err)
 			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -105,7 +103,7 @@ func main() {
 		var data ApiResponse
 		err = json.Unmarshal(body, &data)
 		if err != nil {
-			log.Printf("Request ID: %s, Error unmarshalling response: %v", requestID, err)
+			log.Printf("Error unmarshalling response: %v", err)
 			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -114,12 +112,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{URL: data[0].URL})
 
-		log.Printf("Request ID: %s, Request handled successfully", requestID)
+		log.Printf("/cat handled successfully")
 	})
 
 	http.HandleFunc("/dog", func(w http.ResponseWriter, r *http.Request) {
-		requestID := uuid.New().String()
-		log.Printf("Handling request ID: %s", requestID)
+		log.Printf("Handling /dog")
 
 		ctx, span := tracer.Start(r.Context(), "GET /dog")
 		defer span.End()
@@ -127,7 +124,7 @@ func main() {
 		client := &http.Client{}
 		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.thedogapi.com/v1/images/search", nil)
 		if err != nil {
-			log.Printf("Request ID: %s, Error creating request: %v", requestID, err)
+			log.Printf("Error creating request: %v", err)
 			span.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -137,7 +134,7 @@ func main() {
 
 		resp, err := client.Do(req.WithContext(childCtx))
 		if err != nil {
-			log.Printf("Request ID: %s, Error making request: %v", requestID, err)
+			log.Printf("Error making request: %v", err)
 			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -147,7 +144,7 @@ func main() {
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Printf("Request ID: %s, Error reading response body: %v", requestID, err)
+			log.Printf("Error reading response body: %v", err)
 			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -156,7 +153,7 @@ func main() {
 		var data ApiResponse
 		err = json.Unmarshal(body, &data)
 		if err != nil {
-			log.Printf("Request ID: %s, Error unmarshalling response: %v", requestID, err)
+			log.Printf("Error unmarshalling response: %v", err)
 			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -165,17 +162,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{URL: data[0].URL})
 
-		log.Printf("Request ID: %s, Request handled successfully", requestID)
+		log.Printf("/dog handled successfully")
 	})
 
-	fmt.Println("Server is starting ...")
+	log.Println("Server is starting ...")
 
 	sigint := make(chan os.Signal, 1)
 	signal.Notify(sigint, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		<-sigint
-		fmt.Println("Server is stopped.")
+		log.Println("Server is stopped.")
 		os.Exit(0)
 	}()
 
