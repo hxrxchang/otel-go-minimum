@@ -5,28 +5,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
+
 func initTracer() (*sdktrace.TracerProvider, error) {
-	exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	client := otlptracehttp.NewClient(
+		otlptracehttp.WithInsecure(), // JaegerのOTLPエンドポイントがHTTPSでない場合に使用
+		otlptracehttp.WithEndpoint("localhost:4318"), // OTLPエンドポイントを指定
+	)
+
+	exporter, err := otlptrace.New(context.Background(), client)
 	if err != nil {
 		return nil, err
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
+		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceNameKey.String("cat-api-server"),
@@ -47,24 +56,32 @@ type Response struct {
 func main() {
 	tp, err := initTracer()
 	if err != nil {
-		fmt.Println("Error initializing tracer: ", err)
+		fmt.Printf("failed to initialize tracer: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() {
 		if err := tp.Shutdown(context.Background()); err != nil {
-			fmt.Println("Error shutting down tracer: ", err)
+			fmt.Printf("failed to shutdown tracer: %v\n", err)
 		}
 	}()
 
 	tracer := otel.Tracer("cat-api-server")
 
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := tracer.Start(r.Context(), "GET /")
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		requestID := uuid.New().String()
+		log.Printf("Handling request ID: %s", requestID)
+
+		ctx, span := tracer.Start(r.Context(), "handleRequest")
 		defer span.End()
 
 		client := &http.Client{}
 		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.thecatapi.com/v1/images/search", nil)
 		if err != nil {
+			log.Printf("Request ID: %s, Error creating request: %v", requestID, err)
 			span.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -74,6 +91,8 @@ func main() {
 		resp, err := client.Do(req)
 		span.AddEvent("HTTP request made", trace.WithTimestamp(startTime))
 		if err != nil {
+			log.Printf("Request ID: %s, Error making request: %v", requestID, err)
+			span.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -81,17 +100,26 @@ func main() {
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
+			log.Printf("Request ID: %s, Error reading response body: %v", requestID, err)
+			span.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		var data CatApiResponse
 		err = json.Unmarshal(body, &data)
 		if err != nil {
+			log.Printf("Request ID: %s, Error unmarshalling response: %v", requestID, err)
+			span.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+
 		w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(Response{URL: data[0].URL})
-    })
+		json.NewEncoder(w).Encode(Response{URL: data[0].URL})
+
+		log.Printf("Request ID: %s, Request handled successfully", requestID)
+	})
 
 	fmt.Println("Server is starting ...")
 
@@ -104,5 +132,5 @@ func main() {
 		os.Exit(0)
 	}()
 
-    http.ListenAndServe(":8080", nil)
+	http.ListenAndServe(":8080", nil)
 }
