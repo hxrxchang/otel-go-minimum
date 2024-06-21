@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -88,8 +89,9 @@ func main() {
 		}
 
 		startTime := time.Now()
-		resp, err := client.Do(req)
 		span.AddEvent("HTTP request made", trace.WithTimestamp(startTime))
+
+		resp, err := client.Do(req)
 		if err != nil {
 			log.Printf("Request ID: %s, Error making request: %v", requestID, err)
 			span.RecordError(err)
@@ -97,6 +99,12 @@ func main() {
 			return
 		}
 		defer resp.Body.Close()
+
+		endTime := time.Now()
+		duration := endTime.Sub(startTime)
+		span.AddEvent("HTTP request completed", trace.WithAttributes(
+			attribute.String("response.time", duration.String()),
+		))
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
