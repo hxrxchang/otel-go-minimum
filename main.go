@@ -88,28 +88,25 @@ func main() {
 			return
 		}
 
-		startTime := time.Now()
-		span.AddEvent("HTTP request made", trace.WithTimestamp(startTime))
+		childCtx, childSpan := tracer.Start(ctx, "HTTP GET: https://api.thecatapi.com/v1/images/search")
+		defer childSpan.End()
 
-		resp, err := client.Do(req)
+		startTime := time.Now()
+		childSpan.AddEvent("HTTP request made", trace.WithTimestamp(startTime))
+
+		resp, err := client.Do(req.WithContext(childCtx))
 		if err != nil {
 			log.Printf("Request ID: %s, Error making request: %v", requestID, err)
-			span.RecordError(err)
+			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		defer resp.Body.Close()
 
-		endTime := time.Now()
-		duration := endTime.Sub(startTime)
-		span.AddEvent("HTTP request completed", trace.WithAttributes(
-			attribute.String("response.time", duration.String()),
-		))
-
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			log.Printf("Request ID: %s, Error reading response body: %v", requestID, err)
-			span.RecordError(err)
+			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -118,15 +115,21 @@ func main() {
 		err = json.Unmarshal(body, &data)
 		if err != nil {
 			log.Printf("Request ID: %s, Error unmarshalling response: %v", requestID, err)
-			span.RecordError(err)
+			childSpan.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		endTime := time.Now()
+		duration := endTime.Sub(startTime)
+		childSpan.AddEvent("HTTP request completed", trace.WithAttributes(
+			attribute.String("response.time", duration.String()),
+		))
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{URL: data[0].URL})
 
-		log.Printf("Request ID: %s, Request handled successfully", requestID)
+		log.Printf("Request ID: %s, Request handled successfully in %v", requestID, duration)
 	})
 
 	fmt.Println("Server is starting ...")
@@ -142,3 +145,4 @@ func main() {
 
 	http.ListenAndServe(":8080", nil)
 }
+
