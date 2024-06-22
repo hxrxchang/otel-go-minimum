@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
@@ -22,8 +23,8 @@ import (
 
 func initTracer() (*sdktrace.TracerProvider, error) {
 	client := otlptracehttp.NewClient(
-		otlptracehttp.WithInsecure(), // JaegerのOTLPエンドポイントがHTTPSでない場合に使用
-		otlptracehttp.WithEndpoint("localhost:4318"), // OTLPエンドポイントを指定
+		otlptracehttp.WithInsecure(),
+		otlptracehttp.WithEndpoint("localhost:4318"),
 	)
 
 	exporter, err := otlptrace.New(context.Background(), client)
@@ -41,6 +42,24 @@ func initTracer() (*sdktrace.TracerProvider, error) {
 	otel.SetTracerProvider(tp)
 	return tp, nil
 }
+
+func initStdOutTracer() (*sdktrace.TracerProvider, error) {
+	exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	if err != nil {
+		return nil, err
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String("cat-api-server"),
+		)),
+	)
+	otel.SetTracerProvider(tp)
+	return tp, nil
+}
+
 
 type ApiResponse []struct {
 	URL string `json:"url"`
@@ -67,19 +86,20 @@ func main() {
 	http.HandleFunc("/cat", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Handling /cat")
 
-		ctx, span := tracer.Start(r.Context(), "GET /cat")
+		parentCtx, span := tracer.Start(r.Context(), "GET /cat")
 		defer span.End()
 
 		client := &http.Client{}
-		req, err := http.NewRequestWithContext(ctx, "GET", "https://api.thecatapi.com/v1/images/search", nil)
+
+		childCtx, childSpan := tracer.Start(parentCtx, "HTTP GET: https://api.thecatapi.com/v1/images/search")
+
+		req, err := http.NewRequestWithContext(parentCtx, "GET", "https://api.thecatapi.com/v1/images/search", nil)
 		if err != nil {
 			log.Printf("Error creating request: %v", err)
 			span.RecordError(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		childCtx, childSpan := tracer.Start(ctx, "HTTP GET: https://api.thecatapi.com/v1/images/search")
 
 		resp, err := client.Do(req.WithContext(childCtx))
 		if err != nil {
@@ -88,6 +108,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
 		childSpan.End()
 
 		defer resp.Body.Close()
